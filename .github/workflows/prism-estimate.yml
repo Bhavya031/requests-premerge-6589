@@ -31,7 +31,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PRISM_SKIP_DOTENV: "1"
-      PRISM_COMMIT: 2aefe11f1d113f2fcecfc89f8f285f7207e7e4ba
+      PRISM_COMMIT: 1d5fe9a35c898074760b6d4991b57c9485129c28
       SOURCE_ISSUE_URL: https://github.com/psf/requests/issues/6586
       SOURCE_PR_URL: https://github.com/psf/requests/pull/6589
       SOURCE_COMMIT: 3587a5f869ea7ae2ba6b20d281d810b65aa2418e
@@ -76,7 +76,16 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" -F body=@comment.md > /dev/null
           fi
 
-      - name: Install Glance
+      - name: Check out the pinned source tree for discovery and measurement
+        if: "!steps.gate.outputs.note"
+        uses: actions/checkout@v4
+        with:
+          repository: psf/requests
+          ref: ${{ env.SOURCE_COMMIT }}
+          path: source
+          persist-credentials: false
+
+      - name: Install Glance and Entire CLI
         if: "!steps.gate.outputs.note"
         env:
           GOPRIVATE: github.com/Bhavya031/*
@@ -92,6 +101,12 @@ jobs:
               '**Stopped by:** Glance installation failed before any model call. **Spent:** $0.' > comment.md
             exit 1
           fi
+          if ! go install github.com/entireio/cli/cmd/entire@v0.11.4 > /dev/null 2>&1; then
+            printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
+              '**Stopped by:** Entire CLI installation failed before any model call. **Spent:** $0.' > comment.md
+            exit 1
+          fi
+          echo "$GOBIN" >> "$GITHUB_PATH"
           if ! python -c 'import os; from prism import glance; glance.measure("count check", glance=os.environ["PRISM_GLANCE"])' > /dev/null 2>&1; then
             printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
               '**Stopped by:** Glance count validation failed before any model call. **Spent:** $0.' > comment.md
@@ -103,17 +118,16 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ENTIRE_TOKEN: ${{ secrets.ENTIRE_TOKEN }}
-          PRISM_ENTIRE_TRANSPORT: http
           PRISM_GLANCE: ${{ runner.temp }}/bin/glance
         run: |
           status=0
           : > failure.txt
           if diagnostic=$(prism predict "$SOURCE_ISSUE_URL" --repo "$ENTIRE_REPO" --provider claude --format json \
-            --pr-url "$SOURCE_PR_URL" --pre-merge-sha "$SOURCE_COMMIT" \
+            --pr-url "$SOURCE_PR_URL" --pre-merge-sha "$SOURCE_COMMIT" --checkout source \
             --max-cost-usd 0.10 --max-output-tokens 4000 --max-extra-rounds 1 --timeout-seconds 180 \
             3>&1 1> predict.json 2>&3); then
             if diagnostic=$(prism solve-estimate --issue-url "$SOURCE_ISSUE_URL" --prediction predict.json --provider claude \
-            --commit "$SOURCE_COMMIT" --github-repo psf/requests --worker-model "$WORKER_MODEL" --mode heuristic \
+            --commit "$SOURCE_COMMIT" --checkout source --worker-model "$WORKER_MODEL" --mode heuristic \
             3>&1 1> estimate.json 2>&3); then
               :
             else
