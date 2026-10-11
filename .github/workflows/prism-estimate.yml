@@ -31,7 +31,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PRISM_SKIP_DOTENV: "1"
-      PRISM_COMMIT: bb55a23f9387e752e1aafb294932dd41110f5f5e
+      PRISM_COMMIT: 9cc222b34efa81d2b9beb8f144261e5e6ce9ab65
       SOURCE_ISSUE_URL: https://github.com/psf/requests/issues/6586
       SOURCE_PR_URL: https://github.com/psf/requests/pull/6589
       SOURCE_COMMIT: 3587a5f869ea7ae2ba6b20d281d810b65aa2418e
@@ -85,7 +85,7 @@ jobs:
           path: source
           persist-credentials: false
 
-      - name: Install Glance and Entire CLI
+      - name: Install Glance
         if: "!steps.gate.outputs.note"
         env:
           GOPRIVATE: github.com/Bhavya031/*
@@ -101,11 +101,6 @@ jobs:
               '**Stopped by:** Glance installation failed before any model call. **Spent:** $0.' > comment.md
             exit 1
           fi
-          if ! go install github.com/entireio/cli/cmd/entire@v0.11.4 > /dev/null 2>&1; then
-            printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
-              '**Stopped by:** Entire CLI installation failed before any model call. **Spent:** $0.' > comment.md
-            exit 1
-          fi
           echo "$GOBIN" >> "$GITHUB_PATH"
           if ! python -c 'import os; from prism import glance; glance.measure("count check", glance=os.environ["PRISM_GLANCE"])' > /dev/null 2>&1; then
             printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
@@ -117,7 +112,6 @@ jobs:
         if: "!steps.gate.outputs.note"
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ENTIRE_TOKEN: ${{ secrets.ENTIRE_TOKEN }}
           PRISM_GLANCE: ${{ runner.temp }}/bin/glance
         run: |
           status=0
