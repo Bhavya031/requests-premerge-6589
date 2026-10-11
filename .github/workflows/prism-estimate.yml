@@ -47,6 +47,7 @@ jobs:
         with:
           go-version: stable
       - name: Install pinned private Prism
+        id: install
         env:
           GIT_TERMINAL_PROMPT: "0"
           GIT_CONFIG_COUNT: 1
@@ -54,7 +55,8 @@ jobs:
           GIT_CONFIG_VALUE_0: https://github.com/Bhavya031/Prisme
         run: |
           if ! pip install "git+https://github.com/Bhavya031/Prisme.git@$PRISM_COMMIT" > /dev/null 2>&1; then
-            echo 'Could not install the pinned private Prism commit; no model call was made.' >&2
+            printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
+              '**Stopped by:** pinned Prism installation failed before any model call. **Spent:** $0.' > comment.md
             exit 1
           fi
 
@@ -128,7 +130,7 @@ jobs:
           exit "$status"
 
       - name: Post or update the one Prism comment
-        if: always() && steps.gate.outcome == 'success' && !steps.gate.outputs.note
+        if: always() && (steps.gate.outcome == 'success' || steps.install.outcome == 'failure') && !steps.gate.outputs.note
         run: |
           if [ ! -s comment.md ]; then
             printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
