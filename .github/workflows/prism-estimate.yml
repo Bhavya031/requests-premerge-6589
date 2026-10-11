@@ -64,6 +64,12 @@ jobs:
         id: gate
         run: prism issue-gate --event "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
 
+      - name: Say when to try again
+        if: steps.gate.outputs.note
+        env:
+          NOTE: ${{ steps.gate.outputs.note }}
+        run: gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$NOTE"
+
       - name: Reserve the one comment before any paid call
         if: "!steps.gate.outputs.note"
         run: |
