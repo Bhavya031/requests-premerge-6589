@@ -31,7 +31,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PRISM_SKIP_DOTENV: "1"
-      PRISM_COMMIT: 9cc222b34efa81d2b9beb8f144261e5e6ce9ab65
+      PRISM_COMMIT: 7a8c62cc35dd67aefe0c26ca214476982d57e45d
       SOURCE_ISSUE_URL: https://github.com/psf/requests/issues/6586
       SOURCE_PR_URL: https://github.com/psf/requests/pull/6589
       SOURCE_COMMIT: 3587a5f869ea7ae2ba6b20d281d810b65aa2418e
