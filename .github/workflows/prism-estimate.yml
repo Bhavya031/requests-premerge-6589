@@ -1,0 +1,143 @@
+name: Prism estimate
+
+# The fork issue is the trigger/comment destination. The benchmark source issue and commit are pinned below.
+# Change SOURCE_ISSUE_URL, SOURCE_PR_URL and SOURCE_COMMIT together for another benchmark case.
+# PRISM_COMMIT pins the reviewed Prism implementation and changes only when that code is updated.
+# Issue text is untrusted: github.event values reach a shell only through env, never inside a run: line.
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  estimate:
+    # Outsiders never start the job. `prism issue-gate` repeats this check and is the tested copy.
+    if: >-
+      !github.event.issue.pull_request &&
+      ((github.event_name == 'issues' &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association)) ||
+       (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/prism estimate') &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)))
+    # One run at a time, so the reservation is visible before another gate checks the rate limit.
+    concurrency: prism-estimate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PRISM_SKIP_DOTENV: "1"
+      PRISM_COMMIT: cd2279f429a563698e910487b74153301b68ef76
+      SOURCE_ISSUE_URL: https://github.com/psf/requests/issues/6586
+      SOURCE_PR_URL: https://github.com/psf/requests/pull/6589
+      SOURCE_COMMIT: 3587a5f869ea7ae2ba6b20d281d810b65aa2418e
+      ENTIRE_REPO: gh/Bhavya031/requests-premerge-6589
+      WORKER_MODEL: claude-sonnet-5-5
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install pinned private Prism
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.PRISME_READ_TOKEN }}@github.com/Bhavya031/Prisme.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/Bhavya031/Prisme
+        run: |
+          if ! pip install "git+https://github.com/Bhavya031/Prisme.git@$PRISM_COMMIT" > /dev/null 2>&1; then
+            echo 'Could not install the pinned private Prism commit; no model call was made.' >&2
+            exit 1
+          fi
+
+      - name: Check the author and the rate limit before anything is spent
+        id: gate
+        run: prism issue-gate --event "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Reserve the one comment before any paid call
+        if: "!steps.gate.outputs.note"
+        run: |
+          printf '%s\n' '<!-- prism-estimate -->' 'Prism is estimating this issue.' > comment.md
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" --jq \
+            '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- prism-estimate -->"))) | .id' | tail -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@comment.md > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" -F body=@comment.md > /dev/null
+          fi
+
+      - name: Install Glance
+        if: "!steps.gate.outputs.note"
+        env:
+          GOPRIVATE: github.com/Bhavya031/*
+          GOBIN: ${{ runner.temp }}/bin
+          PRISM_GLANCE: ${{ runner.temp }}/bin/glance
+          # A read token, if Glance needs one, stays in the step environment rather than a git config file.
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.GLANCE_READ_TOKEN }}@github.com/Bhavya031/Glance.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/Bhavya031/Glance
+        run: |
+          if ! go install github.com/Bhavya031/Glance/cmd/glance@main > /dev/null 2>&1; then
+            printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
+              '**Stopped by:** Glance installation failed before any model call. **Spent:** $0.' > comment.md
+            exit 1
+          fi
+          if ! python -c 'import os; from prism import glance; glance.measure("count check", glance=os.environ["PRISM_GLANCE"])' > /dev/null 2>&1; then
+            printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
+              '**Stopped by:** Glance count validation failed before any model call. **Spent:** $0.' > comment.md
+            exit 1
+          fi
+
+      - name: Predict files, then estimate the solve cost
+        if: "!steps.gate.outputs.note"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ENTIRE_TOKEN: ${{ secrets.ENTIRE_TOKEN }}
+          PRISM_ENTIRE_TRANSPORT: http
+          PRISM_GLANCE: ${{ runner.temp }}/bin/glance
+        run: |
+          status=0
+          : > failure.txt
+          if diagnostic=$(prism predict "$SOURCE_ISSUE_URL" --repo "$ENTIRE_REPO" --provider claude --format json \
+            --pr-url "$SOURCE_PR_URL" --pre-merge-sha "$SOURCE_COMMIT" \
+            --max-cost-usd 0.10 --max-output-tokens 4000 --max-extra-rounds 1 --timeout-seconds 180 \
+            3>&1 1> predict.json 2>&3); then
+            if diagnostic=$(prism solve-estimate --issue-url "$SOURCE_ISSUE_URL" --prediction predict.json --provider claude \
+            --commit "$SOURCE_COMMIT" --github-repo psf/requests --worker-model "$WORKER_MODEL" --mode heuristic \
+            3>&1 1> estimate.json 2>&3); then
+              :
+            else
+              status=1
+              printf '%s' "$diagnostic" | python -c 'import sys; from prism.results import redact; lines=redact(sys.stdin.read()).strip().splitlines(); print("prism solve-estimate failed: " + (lines[-1] if lines else "no diagnostic"))' > failure.txt
+            fi
+          else
+            status=1
+            printf '%s' "$diagnostic" | python -c 'import sys; from prism.results import redact; lines=redact(sys.stdin.read()).strip().splitlines(); print("prism predict failed: " + (lines[-1] if lines else "no diagnostic"))' > failure.txt
+          fi
+          # Rendered here, where the keys are in the environment, so the comment is scrubbed of their values.
+          prism issue-comment --prediction predict.json --estimate estimate.json --errors failure.txt \
+            --run-url "$RUN_URL" > comment.md || status=$?
+          exit "$status"
+
+      - name: Post or update the one Prism comment
+        if: always() && steps.gate.outcome == 'success' && !steps.gate.outputs.note
+        run: |
+          if [ ! -s comment.md ]; then
+            printf '%s\n' '<!-- prism-estimate -->' '### Prism estimate did not finish' '' \
+              "It stopped before it produced a result. What it spent, if anything, is in the [workflow run]($RUN_URL)." > comment.md
+          fi
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" --jq \
+            '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- prism-estimate -->"))) | .id' | tail -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@comment.md > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments" -F body=@comment.md > /dev/null
+          fi
